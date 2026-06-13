@@ -1,0 +1,23 @@
+[package]
+name = "farga-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+farga-core = { path = "../farga-core" }
+tokio = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+notify = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true }
