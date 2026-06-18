@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub enum NodeKind {
     OrgLayer, InitiativeLayer, ProjectLayer, ComponentLayer,
     Artifact, Signal, Decision, Pattern, FondamentProposal, AuditEntry,
+    GovernanceContribution,
 }
 
 impl NodeKind {
@@ -22,6 +23,7 @@ impl NodeKind {
             Self::Pattern => "Pattern",
             Self::FondamentProposal => "FondamentProposal",
             Self::AuditEntry => "AuditEntry",
+            Self::GovernanceContribution => "GovernanceContribution",
         }
     }
 }
@@ -40,6 +42,7 @@ impl FromStr for NodeKind {
             "Pattern" => Ok(Self::Pattern),
             "FondamentProposal" => Ok(Self::FondamentProposal),
             "AuditEntry" => Ok(Self::AuditEntry),
+            "GovernanceContribution" => Ok(Self::GovernanceContribution),
             _ => Err(format!("unknown NodeKind: {}", s)),
         }
     }
@@ -136,4 +139,66 @@ pub struct Artifact {
     pub content: String,
     pub session_id: Option<String>,
     pub kind: String,           // "adr" | "implementation-notes" | "test-plan" | ...
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FargaLayer {
+    OrgLevel,
+    InitiativeLevel,
+    ProjectLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReversibilityLevel {
+    FullyReversible,
+    EffectsLinger,
+    CostlyReversible,
+    Irreversible,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImpactScope {
+    Contained,
+    CrossProject,
+    DomainWide,
+    OrgWide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LibrarianRouting {
+    DirectIntegrate,
+    OpenGovernance,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GovernanceStatus {
+    Pending,
+    DirectIntegrate,
+    OpenGovernance,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernanceContribution {
+    pub title: String,
+    pub narrative: String,
+    pub lessons: Vec<String>,
+    pub open_questions: Vec<String>,
+    pub involved_projects: Vec<String>,
+    pub concurrence: Vec<serde_json::Value>,
+    pub target_layer: FargaLayer,
+    pub first_observed_at: DateTime<Utc>,
+    pub last_observed_at: DateTime<Utc>,
+    pub event_count: u32,
+    pub reversibility: Option<ReversibilityLevel>,
+    pub impact: Option<ImpactScope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibrarianAssessment {
+    pub reversibility: ReversibilityLevel,
+    pub impact: ImpactScope,
+    pub routing: LibrarianRouting,
+    pub notes: Option<String>,
 }
