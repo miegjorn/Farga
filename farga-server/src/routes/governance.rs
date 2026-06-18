@@ -40,3 +40,7 @@ pub async fn get_precedent(
         .unwrap_or(0);
     Json(serde_json::json!({ "rejection_count": count }))
 }
+
+pub async fn get_governance_config(State(s): State<AppState>) -> String {
+    s.docs.read_governance_config().unwrap_or_default()
+}

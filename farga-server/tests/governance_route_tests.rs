@@ -82,3 +82,50 @@ async fn get_precedent_returns_rejection_count() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(json["rejection_count"].as_u64(), Some(1));
 }
+
+#[tokio::test]
+async fn get_governance_config_returns_yaml_if_present() {
+    let pool = test_pool().await;
+    let docs_dir = tempfile::tempdir().unwrap();
+    let config_yaml = "governance:\n  risk_weights:\n    primitive_proximity: 0.25\n";
+    std::fs::write(docs_dir.path().join("governance.yaml"), config_yaml).unwrap();
+
+    use farga_server::{docs::DocsTree, routes, state::AppState};
+    let state = AppState {
+        pool,
+        docs: Arc::new(DocsTree::new(docs_dir.path().to_path_buf())),
+    };
+    let app = routes::router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/governance/config")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(body.contains("primitive_proximity"), "should return governance.yaml content");
+}
+
+#[tokio::test]
+async fn get_governance_config_returns_empty_if_missing() {
+    let pool = test_pool().await;
+    let docs_dir = tempfile::tempdir().unwrap(); // no governance.yaml written
+    use farga_server::{docs::DocsTree, routes, state::AppState};
+    let state = AppState {
+        pool,
+        docs: Arc::new(DocsTree::new(docs_dir.path().to_path_buf())),
+    };
+    let app = routes::router(state);
+    let req = Request::builder()
+        .method("GET")
+        .uri("/governance/config")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.len(), 0);
+}

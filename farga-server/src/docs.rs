@@ -35,4 +35,9 @@ impl DocsTree {
         let p = self.root.join("projects").join(project).join(component_path).join("component.md");
         Ok(if p.exists() { std::fs::read_to_string(p)? } else { String::new() })
     }
+
+    pub fn read_governance_config(&self) -> Result<String> {
+        let p = self.root.join("governance.yaml");
+        Ok(if p.exists() { std::fs::read_to_string(p)? } else { String::new() })
+    }
 }
