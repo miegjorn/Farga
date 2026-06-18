@@ -1,7 +1,8 @@
-use farga_core::types::{Edge, Node, NodeKind, EdgeKind};
+use farga_core::types::{Edge, Node, NodeKind, EdgeKind, GovernanceContribution};
 use sqlx::SqlitePool;
 use anyhow::Result;
 use std::str::FromStr;
+use uuid::Uuid;
 
 pub async fn insert_node(pool: &SqlitePool, node: &Node) -> Result<()> {
     let stale = node.stale as i64;
@@ -125,4 +126,47 @@ pub async fn get_subgraph(pool: &SqlitePool, root_id: &str, depth: u32) -> Resul
     }).collect();
 
     Ok((nodes, edges))
+}
+
+pub async fn insert_governance_contribution(
+    pool: &SqlitePool,
+    contrib: &GovernanceContribution,
+) -> Result<String> {
+    let content = serde_json::to_string(contrib)?;
+    let mut node = Node::new(
+        NodeKind::GovernanceContribution,
+        Some("system".into()),
+        Some(content),
+    );
+    node.title = Some(contrib.title.clone());
+    let node_id = node.id.clone();
+    insert_node(pool, &node).await?;
+
+    let assess_id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO governance_assessments (id, node_id, status, created_at, updated_at)
+         VALUES (?, ?, 'pending', ?, ?)",
+    )
+    .bind(&assess_id)
+    .bind(&node_id)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    Ok(node_id)
+}
+
+pub async fn count_precedent_rejections(pool: &SqlitePool, keywords: &str) -> Result<u32> {
+    let pattern = format!("%{}%", keywords);
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM governance_assessments ga
+         JOIN nodes n ON ga.node_id = n.id
+         WHERE ga.status = 'rejected' AND n.title LIKE ?",
+    )
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.0 as u32)
 }
