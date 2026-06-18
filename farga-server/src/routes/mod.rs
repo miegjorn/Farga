@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod context;
+pub mod governance;
 pub mod signals;
 
 use axum::{routing::{get, post}, Router};
@@ -15,5 +16,7 @@ pub fn router(state: AppState) -> Router {
         .route("/signals/recent", get(signals::get_recent_signals))
         .route("/artifacts", post(artifacts::post_artifact))
         .route("/artifacts/:project", get(artifacts::get_artifacts))
+        .route("/governance", post(governance::post_governance))
+        .route("/governance/precedent", get(governance::get_precedent))
         .with_state(state)
 }

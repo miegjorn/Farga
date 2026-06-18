@@ -21,3 +21,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 sqlx = { workspace = true }
+tower = { version = "0.4", features = ["util"] }
