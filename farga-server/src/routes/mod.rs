@@ -19,5 +19,6 @@ pub fn router(state: AppState) -> Router {
         .route("/governance", post(governance::post_governance))
         .route("/governance/precedent", get(governance::get_precedent))
         .route("/governance/config", get(governance::get_governance_config))
+        .route("/governance/decisions", post(governance::post_governance_decision))
         .with_state(state)
 }

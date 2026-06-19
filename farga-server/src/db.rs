@@ -158,6 +158,25 @@ pub async fn insert_governance_contribution(
     Ok(node_id)
 }
 
+pub async fn insert_governance_decision(
+    pool: &SqlitePool,
+    node_id: &str,
+    outcome: &str,
+    rationale: &str,
+) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        "UPDATE governance_assessments SET status = ?, notes = ?, updated_at = ? WHERE node_id = ?",
+    )
+    .bind(outcome)
+    .bind(rationale)
+    .bind(&now)
+    .bind(node_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn count_precedent_rejections(pool: &SqlitePool, keywords: &str) -> Result<u32> {
     let pattern = format!("%{}%", keywords);
     let row: (i64,) = sqlx::query_as(

@@ -6,7 +6,7 @@ use axum::{
 use farga_core::types::GovernanceContribution;
 use serde::Deserialize;
 use crate::{
-    db::{insert_governance_contribution, count_precedent_rejections},
+    db::{insert_governance_contribution, count_precedent_rejections, insert_governance_decision},
     state::AppState,
 };
 
@@ -43,4 +43,27 @@ pub async fn get_precedent(
 
 pub async fn get_governance_config(State(s): State<AppState>) -> String {
     s.docs.read_governance_config().unwrap_or_default()
+}
+
+#[derive(Deserialize)]
+pub struct GovernanceDecisionRequest {
+    pub node_id: String,
+    pub outcome: String,
+    pub rationale: String,
+}
+
+pub async fn post_governance_decision(
+    State(s): State<AppState>,
+    Json(req): Json<GovernanceDecisionRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match insert_governance_decision(&s.pool, &req.node_id, &req.outcome, &req.rationale).await {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))),
+        Err(e) => {
+            tracing::error!("insert governance decision failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        }
+    }
 }
