@@ -1,5 +1,6 @@
 mod db;
 mod docs;
+mod librarian;
 mod optimizer;
 mod routes;
 mod state;
@@ -21,6 +22,9 @@ async fn main() -> anyhow::Result<()> {
         .connect(&format!("sqlite://{}?mode=rwc", db_path)).await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
+
+    let librarian_pool = pool.clone();
+    tokio::spawn(librarian::run_librarian(librarian_pool));
 
     let state = AppState {
         pool,
