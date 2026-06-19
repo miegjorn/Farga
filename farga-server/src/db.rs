@@ -189,3 +189,30 @@ pub async fn count_precedent_rejections(pool: &SqlitePool, keywords: &str) -> Re
     .await?;
     Ok(row.0 as u32)
 }
+
+pub async fn get_assessment_by_node(
+    pool: &SqlitePool,
+    node_id: &str,
+) -> Result<Option<serde_json::Value>> {
+    let row: Option<(String, Option<String>, Option<String>, Option<String>, Option<String>, String)> =
+        sqlx::query_as(
+            "SELECT status, reversibility, impact, routing, notes, updated_at
+             FROM governance_assessments
+             WHERE node_id = ?",
+        )
+        .bind(node_id)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(row.map(|(status, reversibility, impact, routing, notes, updated_at)| {
+        serde_json::json!({
+            "node_id": node_id,
+            "status": status,
+            "reversibility": reversibility,
+            "impact": impact,
+            "routing": routing,
+            "notes": notes,
+            "updated_at": updated_at,
+        })
+    }))
+}
