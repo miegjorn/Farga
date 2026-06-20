@@ -9,6 +9,7 @@ use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
         // MCP server — agents call this
         .route("/mcp", post(mcp::handle))
         // REST — existing routes unchanged
