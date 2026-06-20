@@ -574,4 +574,19 @@ Key crates, all declared as workspace dependencies in the root `Cargo.toml`:
 | `notify` | File watcher for `docs/` hot-reload (v0.2.0) |
 | `thiserror` | `FargaError` derive |
 | `tracing` / `tracing-subscriber` | Structured logging |
+
+---
+
+## Container image
+
+The Docker image builds from the repo root with `rust:1.90-slim` (it bundles the seed
+`docs/` and seeds them into the data PVC via an init container on first run):
+
+```sh
+docker build -t ghcr.io/occitan/farga:latest .
+# local kind:
+kind load docker-image ghcr.io/occitan/farga:latest --name occitan
+```
+
+`farga-server` listens on `:7500`. See `Caissa/docs/install.md` for the full-stack deploy.
 | `anyhow` | Error handling in server and CLI |
