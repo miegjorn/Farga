@@ -110,3 +110,27 @@ gh api graphql -f query='mutation{createIssue(input:{repositoryId:"<REPO_NODE_ID
 Do not file cross-component work as a single issue in one of the component
 repos — open the Initiative in Occitan and let its Epic/Story children live
 in their own repos.
+
+## GitLab Mirror Policy
+
+GitLab (`gitlab.com/cor912026/`) is a **mirror/backup only**. GitHub
+(`github.com/miegjorn/`) is the single source of truth for all 8 repos.
+
+- **No merge requests, ever, on GitLab.** All review and merge activity
+  happens on GitHub. Any MR opened on GitLab should be closed, not merged.
+- **No branch protection on GitLab.** `main` (and any other branch) is
+  intentionally left unprotected on all 8 GitLab projects so that mirror
+  pushes can always force-update, matching whatever GitHub's history looks
+  like — including history rewrites.
+- Each repo's local `origin` remote points to GitHub (canonical); a
+  separate `gitlab` remote points to the mirror. Don't push directly to the
+  `gitlab` remote from a feature branch — mirroring is a full history
+  mirror (`git clone --mirror` + `git push --mirror`) run from GitHub's
+  state, not an incremental push.
+- GitHub's synthetic `refs/pull/N/head` refs are not part of the mirror —
+  GitLab rejects that ref namespace and it carries no meaning there anyway
+  (no MRs are ever tracked on GitLab).
+- If GitHub history is rewritten (e.g. to strip accidentally-committed
+  binaries — see `Fondament` and `Cor`, which had `target/` build
+  artifacts purged from history on 2026-06-21), re-run the full mirror
+  push; GitLab is expected to follow, not to be reconciled by hand.
