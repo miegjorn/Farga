@@ -1,4 +1,5 @@
 pub mod artifacts;
+pub mod audit;
 pub mod context;
 pub mod governance;
 pub mod mcp;
@@ -21,6 +22,8 @@ pub fn router(state: AppState) -> Router {
         .route("/signals/recent", get(signals::get_recent_signals))
         .route("/artifacts", post(artifacts::post_artifact))
         .route("/artifacts/:project", get(artifacts::get_artifacts))
+        .route("/audit", post(audit::post_audit))
+        .route("/audit", get(audit::get_audit))
         .route("/governance", post(governance::post_governance))
         .route("/governance/precedent", get(governance::get_precedent))
         .route("/governance/config", get(governance::get_governance_config))
