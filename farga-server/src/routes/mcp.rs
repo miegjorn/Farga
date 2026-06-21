@@ -7,7 +7,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use farga_core::types::{Artifact, Node, NodeKind, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::{db::insert_node, state::AppState};
+use crate::{db::{insert_node, upsert_component_todo}, state::AppState};
 
 // ── JSON-RPC 2.0 envelope ─────────────────────────────────────────────────────
 
@@ -109,6 +109,20 @@ fn tool_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
+                }
+            }
+            ,
+            {
+                "name": "update_component_todo",
+                "description": "Create or update the TODO/follow-up record for a specific component within a project. Use this to log deferred work or known drift instead of leaving it unrecorded — each (project, component) pair has exactly one live record, overwritten on each call.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string", "description": "Project identifier" },
+                        "component": { "type": "string", "description": "Component name within the project (e.g. 'gardian', 'caissa-listen')" },
+                        "content": { "type": "string", "description": "The TODO content — what's deferred and why" }
+                    },
+                    "required": ["project", "component", "content"]
                 }
             }
         ]
@@ -244,6 +258,22 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
 
             let projects: Vec<String> = rows.into_iter().filter_map(|(p,)| p).collect();
             Ok(text_result(projects.join("\n")))
+        }
+
+        "update_component_todo" => {
+            let project = args["project"].as_str().unwrap_or("").to_string();
+            let component = args["component"].as_str().unwrap_or("").to_string();
+            let content = args["content"].as_str().unwrap_or("").to_string();
+
+            anyhow::ensure!(!project.is_empty(), "project is required");
+            anyhow::ensure!(!component.is_empty(), "component is required");
+            anyhow::ensure!(!content.is_empty(), "content is required");
+
+            let id = upsert_component_todo(&state.pool, &project, &component, &content)
+                .await
+                .map_err(|e| anyhow::anyhow!("upsert failed: {}", e))?;
+
+            Ok(text_result(format!("Component TODO updated (id: {})", id)))
         }
 
         _ => anyhow::bail!("unknown tool: {}", name),
