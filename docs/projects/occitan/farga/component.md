@@ -23,6 +23,12 @@ POST /artifacts
 GET  /artifacts/:project
 POST /governance
 GET  /governance/precedent
+GET  /governance/config
+POST /governance/decisions
+GET  /governance/assessments/:node_id
+POST /mcp                             ← JSON-RPC: write_signal, read_context,
+                                         write_artifact, search_signals,
+                                         list_projects, update_component_todo
 ```
 
 ## Role in Phase II

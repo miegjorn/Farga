@@ -16,14 +16,15 @@ Farga is simultaneously a git repository and a running service. The `docs/` file
 4. [farga-core](#farga-core)
 5. [farga-server](#farga-server)
 6. [REST API](#rest-api)
-7. [Database Schema](#database-schema)
-8. [Optimizer Agent](#optimizer-agent)
-9. [farga-cli](#farga-cli)
-10. [Configuration](#configuration)
-11. [Docs File Tree](#docs-file-tree)
-12. [Consumers: Charradissa and Amassada](#consumers-charradissa-and-amassada)
-13. [Testing](#testing)
-14. [Dependencies](#dependencies)
+7. [MCP Server](#mcp-server)
+8. [Database Schema](#database-schema)
+9. [Optimizer Agent](#optimizer-agent)
+10. [farga-cli](#farga-cli)
+11. [Configuration](#configuration)
+12. [Docs File Tree](#docs-file-tree)
+13. [Consumers: Charradissa and Amassada](#consumers-charradissa-and-amassada)
+14. [Testing](#testing)
+15. [Dependencies](#dependencies)
 
 ---
 
@@ -158,7 +159,9 @@ farga/
 │           ├── mod.rs          # axum Router wiring
 │           ├── context.rs      # GET /context/…
 │           ├── signals.rs      # POST/GET /signals
-│           └── artifacts.rs    # POST/GET /artifacts
+│           ├── artifacts.rs    # POST/GET /artifacts
+│           ├── governance.rs   # POST/GET /governance…
+│           └── mcp.rs          # POST /mcp — MCP JSON-RPC tool server
 ├── farga-cli/                  # command-line interface
 │   └── src/
 │       ├── main.rs             # clap CLI, subcommand dispatch
@@ -170,7 +173,8 @@ farga/
 │           └── proposals.rs    # farga proposals (stub, v0.2.0)
 ├── migrations/
 │   ├── 001_initial_schema.sql  # nodes + edges tables
-│   └── 002_add_indexes.sql     # performance indexes
+│   ├── 002_add_indexes.sql     # performance indexes
+│   └── 003_governance.sql      # governance_assessments table
 └── docs/                       # foundation file tree — human-readable, git-friendly
     ├── org.md
     ├── initiatives/
@@ -329,6 +333,48 @@ Returns `201 Created`. The artifact is stored as an `Artifact` node in the graph
 
 **GET /artifacts/:project** — returns a JSON array of artifact objects.
 
+### Governance endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/governance` | Submit a governance contribution for a node (reversibility/impact signal feeding precedent) |
+| `GET` | `/governance/precedent` | Query rejection-count precedent for governance routing |
+| `GET` | `/governance/config` | Fetch the current governance routing configuration |
+| `POST` | `/governance/decisions` | Record a human governance decision |
+| `GET` | `/governance/assessments/:node_id` | Fetch the governance assessment for a node |
+
+Backed by the `governance_assessments` table (migration `003_governance.sql`, see [Database Schema](#database-schema)).
+
+---
+
+## MCP Server
+
+`farga-server` also exposes a Model Context Protocol (MCP) server — JSON-RPC 2.0 over HTTP — mounted at `POST /mcp` alongside the REST routes above. This is how Claude agents (and other MCP-aware clients) call Farga's core operations directly, instead of going through the REST API. Implemented in `farga-server/src/routes/mcp.rs`.
+
+Supports the standard `initialize`, `tools/list`, and `tools/call` methods, plus a no-op `notifications/initialized`.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `write_signal` | Write an observation, event, or decision to Farga's project memory |
+| `read_context` | Read the current assembled context for a project as markdown (signals, artifacts, project docs) |
+| `write_artifact` | Store a structured artifact (ADR, design doc, test plan, implementation notes, decision) |
+| `search_signals` | Retrieve recent signals for a project |
+| `list_projects` | List all known projects in Farga |
+| `update_component_todo` | Create or update the TODO/follow-up record for a specific component within a project; one live record per `(project, component)` pair, overwritten on each call |
+
+Example call:
+
+```sh
+curl -s -X POST -H 'Content-Type: application/json' -d '{
+  "jsonrpc":"2.0","id":1,"method":"tools/call",
+  "params":{"name":"write_signal","arguments":{
+    "project":"occitan","content":"...","source":"manual"
+  }}
+}' http://localhost:7500/mcp
+```
+
 ---
 
 ## Database Schema
@@ -374,6 +420,24 @@ CREATE INDEX IF NOT EXISTS idx_edges_to      ON edges(to_id);
 ```
 
 These five indexes cover the common query patterns: project-scoped node fetches, kind-filtered lookups, address-based context assembly, and BFS graph traversal.
+
+### migration 003 — governance
+
+```sql
+CREATE TABLE IF NOT EXISTS governance_assessments (
+    id           TEXT PRIMARY KEY,
+    node_id      TEXT NOT NULL REFERENCES nodes(id),
+    status       TEXT NOT NULL DEFAULT 'pending',
+    reversibility TEXT,
+    impact       TEXT,
+    routing      TEXT,
+    notes        TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+```
+
+Backs the `/governance` routes (see [REST API](#rest-api)) — tracks the reversibility/impact assessment and routing decision for a contribution, keyed to the originating node.
 
 ---
 
@@ -574,6 +638,7 @@ Key crates, all declared as workspace dependencies in the root `Cargo.toml`:
 | `notify` | File watcher for `docs/` hot-reload (v0.2.0) |
 | `thiserror` | `FargaError` derive |
 | `tracing` / `tracing-subscriber` | Structured logging |
+| `anyhow` | Error handling in server and CLI |
 
 ---
 
@@ -589,4 +654,3 @@ kind load docker-image ghcr.io/occitan/farga:latest --name occitan
 ```
 
 `farga-server` listens on `:7500`. See `Caissa/docs/install.md` for the full-stack deploy.
-| `anyhow` | Error handling in server and CLI |
