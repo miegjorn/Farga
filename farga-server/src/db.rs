@@ -59,6 +59,38 @@ pub async fn mark_stale(pool: &SqlitePool, id: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn upsert_component_todo(
+    pool: &SqlitePool,
+    project: &str,
+    component: &str,
+    content: &str,
+) -> Result<String> {
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM nodes WHERE kind = 'ComponentLayer' AND project = ? AND component = ? LIMIT 1"
+    )
+    .bind(project)
+    .bind(component)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((id,)) = existing {
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        sqlx::query("UPDATE nodes SET content = ?, updated_at = ?, stale = 0 WHERE id = ?")
+            .bind(content)
+            .bind(&updated_at)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        Ok(id)
+    } else {
+        let mut node = Node::new(NodeKind::ComponentLayer, Some(project.to_string()), Some(content.to_string()));
+        node.component = Some(component.to_string());
+        let id = node.id.clone();
+        insert_node(pool, &node).await?;
+        Ok(id)
+    }
+}
+
 pub async fn insert_edge(pool: &SqlitePool, edge: &Edge) -> Result<()> {
     let kind = edge.kind.as_str().to_string();
     let created_at = edge.created_at.to_rfc3339();

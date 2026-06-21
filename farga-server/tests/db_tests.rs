@@ -1,4 +1,4 @@
-use farga_server::db::{insert_node, get_node, insert_edge, insert_governance_contribution, count_precedent_rejections};
+use farga_server::db::{insert_node, get_node, insert_edge, insert_governance_contribution, count_precedent_rejections, upsert_component_todo};
 use farga_core::types::{Node, NodeKind, Edge, EdgeKind, GovernanceContribution, FargaLayer};
 use chrono::Utc;
 use sqlx::SqlitePool;
@@ -99,4 +99,53 @@ async fn count_precedent_rejections_counts_only_rejected_rows() {
 
     let count2 = count_precedent_rejections(&pool, "auth").await.unwrap();
     assert_eq!(count2, 0);
+}
+
+#[tokio::test]
+async fn upsert_component_todo_creates_then_updates_same_node() {
+    let pool = test_pool().await;
+
+    let id1 = upsert_component_todo(&pool, "occitan", "gardian", "fix flaky readiness probe")
+        .await
+        .unwrap();
+    let node1 = get_node(&pool, &id1).await.unwrap();
+    assert_eq!(node1.content, Some("fix flaky readiness probe".into()));
+    assert_eq!(node1.kind, NodeKind::ComponentLayer);
+    assert_eq!(node1.project, Some("occitan".into()));
+    assert_eq!(node1.component, Some("gardian".into()));
+
+    let id2 = upsert_component_todo(
+        &pool,
+        "occitan",
+        "gardian",
+        "readiness probe fixed; next: trim memory limit",
+    )
+    .await
+    .unwrap();
+    assert_eq!(id1, id2, "second call must update the same node, not create a new one");
+
+    let node2 = get_node(&pool, &id1).await.unwrap();
+    assert_eq!(
+        node2.content,
+        Some("readiness probe fixed; next: trim memory limit".into())
+    );
+}
+
+#[tokio::test]
+async fn upsert_component_todo_scoped_independently_per_component() {
+    let pool = test_pool().await;
+
+    let gardian_id = upsert_component_todo(&pool, "occitan", "gardian", "gardian todo")
+        .await
+        .unwrap();
+    let caissa_id = upsert_component_todo(&pool, "occitan", "caissa", "caissa todo")
+        .await
+        .unwrap();
+
+    assert_ne!(gardian_id, caissa_id, "different components must get different nodes");
+
+    let gardian_node = get_node(&pool, &gardian_id).await.unwrap();
+    let caissa_node = get_node(&pool, &caissa_id).await.unwrap();
+    assert_eq!(gardian_node.content, Some("gardian todo".into()));
+    assert_eq!(caissa_node.content, Some("caissa todo".into()));
 }
