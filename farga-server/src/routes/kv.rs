@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 use crate::{
-    db::{delete_kv, get_kv, list_kv_namespace, patch_kv_merge, upsert_kv},
+    db::{delete_kv, get_kv, list_kv_namespace, patch_kv, upsert_kv},
     state::AppState,
 };
 
@@ -18,8 +18,12 @@ pub struct PutKvReq {
 
 #[derive(Deserialize)]
 pub struct PatchKvReq {
-    /// JSON object to shallow-merge into the current value.
-    pub merge: Value,
+    /// Optional JSON object to shallow-merge into the current value.
+    /// Omit to leave the value unchanged (e.g. a TTL-only refresh).
+    pub merge: Option<Value>,
+    /// Optional new TTL in seconds, resetting expiry to `now + ttl_seconds`.
+    /// Omit to leave the current expiry untouched.
+    pub ttl_seconds: Option<i64>,
 }
 
 /// PUT /kv/*path  — upsert with optional TTL
@@ -104,20 +108,23 @@ pub async fn delete_kv_handler(
     }
 }
 
-/// PATCH /kv/*path  — shallow JSON object merge
+/// PATCH /kv/*path  — update value (shallow JSON object merge) and/or TTL in place
 pub async fn patch_kv_handler(
     State(s): State<AppState>,
     Path(kv_path): Path<String>,
     Json(req): Json<PatchKvReq>,
 ) -> StatusCode {
-    let merge_json = match serde_json::to_string(&req.merge) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("kv patch: serialise merge failed: {}", e);
-            return StatusCode::BAD_REQUEST;
-        }
+    let merge_json = match req.merge.as_ref() {
+        Some(v) => match serde_json::to_string(v) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::error!("kv patch: serialise merge failed: {}", e);
+                return StatusCode::BAD_REQUEST;
+            }
+        },
+        None => None,
     };
-    match patch_kv_merge(&s.pool, &kv_path, &merge_json).await {
+    match patch_kv(&s.pool, &kv_path, merge_json.as_deref(), req.ttl_seconds).await {
         Ok(true) => StatusCode::NO_CONTENT,
         Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {

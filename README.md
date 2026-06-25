@@ -358,7 +358,7 @@ A KV path is a `/`-separated string. The segment after the final `/` is the **ke
 | `PUT` | `/kv/*path` | Upsert an entry (idempotent). Returns `204 No Content` |
 | `GET` | `/kv/*path` | Read: exact key → single entry; otherwise prefix → namespace list; neither → `404` |
 | `DELETE` | `/kv/*path` | Delete an entry. `204` if removed, `404` if absent |
-| `PATCH` | `/kv/*path` | Shallow-merge a JSON object into the current value. `204`, or `404` if absent |
+| `PATCH` | `/kv/*path` | Update value and/or TTL in place. `204`, or `404` if absent |
 
 **PUT /kv/\*path** — request body:
 
@@ -370,6 +370,20 @@ A KV path is a `/`-separated string. The segment after the final `/` is the **ke
 ```
 
 `value` is any JSON value. `ttl_seconds` is optional — when omitted the entry never expires; otherwise the entry becomes invisible to `GET`/`DELETE`/`PATCH` once `expires_at` passes.
+
+**PATCH /kv/\*path** — update an existing entry in place. Both fields are optional:
+
+```json
+{
+  "merge": { "acks": ["pod-a"] },
+  "ttl_seconds": 30
+}
+```
+
+- `merge` (when present) is a JSON object shallow-merged into the current value; merging a non-object replaces the value wholesale. Omit it to leave the value untouched (e.g. a TTL-only heartbeat refresh).
+- `ttl_seconds` (when present) resets `expires_at` to `now + ttl_seconds`; a non-positive value expires the entry immediately. Omit it to leave the current expiry untouched.
+
+Returns `404` if the key is absent, stale, or already expired.
 
 **GET /kv/\*path** dispatches on the path:
 
@@ -393,6 +407,11 @@ curl -s http://localhost:7500/kv/guilhem/instances
 curl -s -X PATCH -H 'Content-Type: application/json' \
   -d '{"merge":{"acks":["pod-a"]}}' \
   http://localhost:7500/kv/guilhem/proposals/uuid-1
+
+# Refresh only the TTL (heartbeat) without resending the value
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"ttl_seconds":30}' \
+  http://localhost:7500/kv/guilhem/instances/pod-abc
 ```
 
 ---

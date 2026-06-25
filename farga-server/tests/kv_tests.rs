@@ -239,6 +239,95 @@ async fn patch_kv_merges_json_fields() {
     assert!(acks.as_array().unwrap().contains(&serde_json::json!("pod-a")));
 }
 
+// ── PATCH: update TTL in place ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn patch_kv_can_update_ttl() {
+    let pool = test_pool().await;
+    let app = test_app(pool);
+
+    // Create a permanent (no-TTL) entry.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/kv/ns/ttl-patch")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"value":{"n":1}}"#))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap();
+
+    // PATCH it to expire in the past — proves PATCH writes expires_at.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/kv/ns/ttl-patch")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"ttl_seconds":-100}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // GET must now treat it as expired → 404.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/kv/ns/ttl-patch")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "PATCH ttl_seconds must update expiry");
+}
+
+#[tokio::test]
+async fn patch_kv_ttl_only_preserves_value() {
+    let pool = test_pool().await;
+    let app = test_app(pool);
+
+    // Create a permanent entry.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/kv/ns/ttl-keep")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"value":{"n":42}}"#))
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap();
+
+    // PATCH only the TTL (no merge) — value must survive, expiry set.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/kv/ns/ttl-keep")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"ttl_seconds":3600}"#))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // GET: value intact, expires_at now populated.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/kv/ns/ttl-keep")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["value"]["n"].as_i64(), Some(42), "ttl-only PATCH must not drop value");
+    assert!(json["expires_at"].is_string(), "expires_at must be set after PATCH ttl_seconds");
+}
+
+#[tokio::test]
+async fn patch_missing_kv_key_returns_404() {
+    let pool = test_pool().await;
+    let app = test_app(pool);
+
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/kv/ns/nope")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"ttl_seconds":30}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Namespaces are isolated ────────────────────────────────────────────────
 
 #[tokio::test]

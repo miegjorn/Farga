@@ -372,35 +372,71 @@ pub async fn delete_kv(pool: &SqlitePool, kv_path: &str) -> Result<bool> {
     Ok(result.rows_affected() > 0)
 }
 
-/// PATCH: merge `merge_json` (a JSON object) into the current value.
-/// Non-object values are replaced wholesale.  Returns false if key not found.
-pub async fn patch_kv_merge(pool: &SqlitePool, kv_path: &str, merge_json: &str) -> Result<bool> {
-    let now = chrono::Utc::now().to_rfc3339();
+/// PATCH: update an entry's value and/or TTL in place.
+///
+/// - `merge_json` (when `Some`) is a JSON object shallow-merged into the current
+///   value; non-object values are replaced wholesale. `None` leaves the value as-is.
+/// - `ttl_seconds` (when `Some`) resets `expires_at` to `now + ttl_seconds`
+///   (a non-positive value expires the entry immediately). `None` leaves the
+///   current expiry untouched.
+///
+/// Returns false if the key is not found (absent, stale, or already expired).
+pub async fn patch_kv(
+    pool: &SqlitePool,
+    kv_path: &str,
+    merge_json: Option<&str>,
+    ttl_seconds: Option<i64>,
+) -> Result<bool> {
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
     let row = get_kv(pool, kv_path).await?;
     let Some(entry) = row else { return Ok(false); };
 
-    let patch: serde_json::Value = serde_json::from_str(merge_json)
-        .unwrap_or(serde_json::Value::Null);
-
-    let merged_value = match (entry.value, patch) {
-        (serde_json::Value::Object(mut base), serde_json::Value::Object(overlay)) => {
-            for (k, v) in overlay {
-                base.insert(k, v);
-            }
-            serde_json::Value::Object(base)
+    // Compute the new value: either merge the overlay or keep the existing value.
+    let merged = match merge_json {
+        Some(mj) => {
+            let patch: serde_json::Value =
+                serde_json::from_str(mj).unwrap_or(serde_json::Value::Null);
+            let merged_value = match (entry.value, patch) {
+                (serde_json::Value::Object(mut base), serde_json::Value::Object(overlay)) => {
+                    for (k, v) in overlay {
+                        base.insert(k, v);
+                    }
+                    serde_json::Value::Object(base)
+                }
+                (base, serde_json::Value::Null) => base,
+                (_, overlay) => overlay,
+            };
+            serde_json::to_string(&merged_value)?
         }
-        (base, serde_json::Value::Null) => base,
-        (_, overlay) => overlay,
+        None => serde_json::to_string(&entry.value)?,
     };
 
-    let merged = serde_json::to_string(&merged_value)?;
-    sqlx::query(
-        "UPDATE nodes SET content = ?, updated_at = ? WHERE kind = 'KV' AND title = ? AND stale = 0"
-    )
-    .bind(&merged)
-    .bind(&now)
-    .bind(kv_path)
-    .execute(pool)
-    .await?;
+    match ttl_seconds {
+        Some(ttl) => {
+            let expires_at = (now + chrono::Duration::seconds(ttl)).to_rfc3339();
+            sqlx::query(
+                "UPDATE nodes SET content = ?, expires_at = ?, updated_at = ? \
+                 WHERE kind = 'KV' AND title = ? AND stale = 0"
+            )
+            .bind(&merged)
+            .bind(&expires_at)
+            .bind(&now_str)
+            .bind(kv_path)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE nodes SET content = ?, updated_at = ? \
+                 WHERE kind = 'KV' AND title = ? AND stale = 0"
+            )
+            .bind(&merged)
+            .bind(&now_str)
+            .bind(kv_path)
+            .execute(pool)
+            .await?;
+        }
+    }
     Ok(true)
 }
