@@ -8,6 +8,8 @@ pub enum NodeKind {
     OrgLayer, InitiativeLayer, ProjectLayer, ComponentLayer,
     Artifact, Signal, Decision, Pattern, FondamentProposal, AuditEntry,
     GovernanceContribution,
+    /// Mutable KV entry — supports TTL via expires_at in the nodes table.
+    KV,
 }
 
 impl NodeKind {
@@ -24,6 +26,7 @@ impl NodeKind {
             Self::FondamentProposal => "FondamentProposal",
             Self::AuditEntry => "AuditEntry",
             Self::GovernanceContribution => "GovernanceContribution",
+            Self::KV => "KV",
         }
     }
 }
@@ -43,6 +46,7 @@ impl FromStr for NodeKind {
             "FondamentProposal" => Ok(Self::FondamentProposal),
             "AuditEntry" => Ok(Self::AuditEntry),
             "GovernanceContribution" => Ok(Self::GovernanceContribution),
+            "KV" => Ok(Self::KV),
             _ => Err(format!("unknown NodeKind: {}", s)),
         }
     }

@@ -248,3 +248,195 @@ pub async fn get_assessment_by_node(
         })
     }))
 }
+
+// ── KV store ─────────────────────────────────────────────────────────────────
+
+/// A live KV entry returned from the DB.
+#[derive(Debug, Clone)]
+pub struct KvRow {
+    pub namespace: String,
+    pub key: String,
+    pub value: serde_json::Value,
+    pub expires_at: Option<String>,
+}
+
+/// Split a kv_path like "guilhem/instances/pod-abc" into
+/// ("guilhem/instances", "pod-abc").  Single-segment paths map to ("", path).
+fn split_kv_path(kv_path: &str) -> (String, String) {
+    match kv_path.rfind('/') {
+        Some(pos) => (kv_path[..pos].to_string(), kv_path[pos + 1..].to_string()),
+        None => (String::new(), kv_path.to_string()),
+    }
+}
+
+fn parse_kv_row(title: Option<String>, content: Option<String>, expires_at: Option<String>) -> Option<KvRow> {
+    let t = title?;
+    let raw = content.unwrap_or_default();
+    let value = serde_json::from_str(&raw).unwrap_or(serde_json::Value::String(raw));
+    let (namespace, key) = split_kv_path(&t);
+    Some(KvRow { namespace, key, value, expires_at })
+}
+
+/// Upsert a KV entry.  kv_path is the full "{namespace}/{key}" string stored as title.
+/// ttl_seconds = None means no expiry.
+pub async fn upsert_kv(
+    pool: &SqlitePool,
+    kv_path: &str,
+    value_json: &str,
+    ttl_seconds: Option<i64>,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    let expires_at = ttl_seconds.map(|ttl| {
+        (now + chrono::Duration::seconds(ttl)).to_rfc3339()
+    });
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM nodes WHERE kind = 'KV' AND title = ? AND stale = 0 LIMIT 1"
+    )
+    .bind(kv_path)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((id,)) = existing {
+        let updated_at = now.to_rfc3339();
+        sqlx::query(
+            "UPDATE nodes SET content = ?, expires_at = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(value_json)
+        .bind(&expires_at)
+        .bind(&updated_at)
+        .bind(&id)
+        .execute(pool)
+        .await?;
+    } else {
+        let id = uuid::Uuid::new_v4().to_string();
+        let ts = now.to_rfc3339();
+        sqlx::query(
+            "INSERT INTO nodes (id, kind, title, content, expires_at, created_at, updated_at, stale)
+             VALUES (?, 'KV', ?, ?, ?, ?, ?, 0)"
+        )
+        .bind(&id)
+        .bind(kv_path)
+        .bind(value_json)
+        .bind(&expires_at)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Read a single KV entry.  Returns None if not found, stale, or expired.
+pub async fn get_kv(pool: &SqlitePool, kv_path: &str) -> Result<Option<KvRow>> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT title, content, expires_at FROM nodes
+         WHERE kind = 'KV' AND title = ? AND stale = 0
+           AND (expires_at IS NULL OR expires_at > ?)
+         LIMIT 1"
+    )
+    .bind(kv_path)
+    .bind(&now)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(|(title, content, exp)| parse_kv_row(title, content, exp)))
+}
+
+/// List all live, non-expired entries in a namespace.
+/// namespace is the prefix before the last "/", e.g. "guilhem/instances".
+pub async fn list_kv_namespace(pool: &SqlitePool, namespace: &str) -> Result<Vec<KvRow>> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let prefix = format!("{}/", namespace);
+    let rows: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT title, content, expires_at FROM nodes
+         WHERE kind = 'KV' AND title LIKE ? AND stale = 0
+           AND (expires_at IS NULL OR expires_at > ?)
+         ORDER BY created_at ASC"
+    )
+    .bind(format!("{}%", prefix))
+    .bind(&now)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().filter_map(|(t, c, e)| parse_kv_row(t, c, e)).collect())
+}
+
+/// Mark a KV entry as stale (logical delete).  Returns true if a row was found and deleted.
+pub async fn delete_kv(pool: &SqlitePool, kv_path: &str) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE nodes SET stale = 1, updated_at = ? WHERE kind = 'KV' AND title = ? AND stale = 0"
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(kv_path)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// PATCH: update an entry's value and/or TTL in place.
+///
+/// - `merge_json` (when `Some`) is a JSON object shallow-merged into the current
+///   value; non-object values are replaced wholesale. `None` leaves the value as-is.
+/// - `ttl_seconds` (when `Some`) resets `expires_at` to `now + ttl_seconds`
+///   (a non-positive value expires the entry immediately). `None` leaves the
+///   current expiry untouched.
+///
+/// Returns false if the key is not found (absent, stale, or already expired).
+pub async fn patch_kv(
+    pool: &SqlitePool,
+    kv_path: &str,
+    merge_json: Option<&str>,
+    ttl_seconds: Option<i64>,
+) -> Result<bool> {
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
+    let row = get_kv(pool, kv_path).await?;
+    let Some(entry) = row else { return Ok(false); };
+
+    // Compute the new value: either merge the overlay or keep the existing value.
+    let merged = match merge_json {
+        Some(mj) => {
+            let patch: serde_json::Value =
+                serde_json::from_str(mj).unwrap_or(serde_json::Value::Null);
+            let merged_value = match (entry.value, patch) {
+                (serde_json::Value::Object(mut base), serde_json::Value::Object(overlay)) => {
+                    for (k, v) in overlay {
+                        base.insert(k, v);
+                    }
+                    serde_json::Value::Object(base)
+                }
+                (base, serde_json::Value::Null) => base,
+                (_, overlay) => overlay,
+            };
+            serde_json::to_string(&merged_value)?
+        }
+        None => serde_json::to_string(&entry.value)?,
+    };
+
+    match ttl_seconds {
+        Some(ttl) => {
+            let expires_at = (now + chrono::Duration::seconds(ttl)).to_rfc3339();
+            sqlx::query(
+                "UPDATE nodes SET content = ?, expires_at = ?, updated_at = ? \
+                 WHERE kind = 'KV' AND title = ? AND stale = 0"
+            )
+            .bind(&merged)
+            .bind(&expires_at)
+            .bind(&now_str)
+            .bind(kv_path)
+            .execute(pool)
+            .await?;
+        }
+        None => {
+            sqlx::query(
+                "UPDATE nodes SET content = ?, updated_at = ? \
+                 WHERE kind = 'KV' AND title = ? AND stale = 0"
+            )
+            .bind(&merged)
+            .bind(&now_str)
+            .bind(kv_path)
+            .execute(pool)
+            .await?;
+        }
+    }
+    Ok(true)
+}

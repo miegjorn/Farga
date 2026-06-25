@@ -120,6 +120,7 @@ A `FondamentProposal` is a candidate for promotion to a Fondament primitive, ide
 | `Pattern` | Optimizer agent | Cross-project pattern identified by sweep |
 | `FondamentProposal` | Optimizer agent | Candidate for promotion to a Fondament primitive |
 | `AuditEntry` | Gardian | Credential audit entry (long-term retention) |
+| `KV` | KV API | Mutable, TTL-aware key/value entry for inter-instance coordination (see [KV store endpoints](#kv-store-endpoints)) |
 
 **Edge kinds:**
 
@@ -161,6 +162,7 @@ farga/
 │           ├── signals.rs      # POST/GET /signals
 │           ├── artifacts.rs    # POST/GET /artifacts
 │           ├── governance.rs   # POST/GET /governance…
+│           ├── kv.rs           # PUT/GET/DELETE/PATCH /kv/*path — mutable TTL store
 │           └── mcp.rs          # POST /mcp — MCP JSON-RPC tool server
 ├── farga-cli/                  # command-line interface
 │   └── src/
@@ -345,6 +347,73 @@ Returns `201 Created`. The artifact is stored as an `Artifact` node in the graph
 
 Backed by the `governance_assessments` table (migration `003_governance.sql`, see [Database Schema](#database-schema)).
 
+### KV store endpoints
+
+A mutable, TTL-aware key/value store — the coordination primitive used for Guilhem instance registration, heartbeat, and inter-instance coordination. Unlike signals and artifacts (append-only memory), KV entries are overwritten in place and may expire. Backed by `NodeKind::KV` rows with the `expires_at` column (migration `004_kv_expires.sql`).
+
+A KV path is a `/`-separated string. The segment after the final `/` is the **key**; everything before it is the **namespace**. For example, `guilhem/instances/pod-abc` has namespace `guilhem/instances` and key `pod-abc`.
+
+| Method | Path | Description |
+|---|---|---|
+| `PUT` | `/kv/*path` | Upsert an entry (idempotent). Returns `204 No Content` |
+| `GET` | `/kv/*path` | Read: exact key → single entry; otherwise prefix → namespace list; neither → `404` |
+| `DELETE` | `/kv/*path` | Delete an entry. `204` if removed, `404` if absent |
+| `PATCH` | `/kv/*path` | Update value and/or TTL in place. `204`, or `404` if absent |
+
+**PUT /kv/\*path** — request body:
+
+```json
+{
+  "value": { "version": "1.0", "started_at": "2026-06-25T00:00:00Z" },
+  "ttl_seconds": 30
+}
+```
+
+`value` is any JSON value. `ttl_seconds` is optional — when omitted the entry never expires; otherwise the entry becomes invisible to `GET`/`DELETE`/`PATCH` once `expires_at` passes.
+
+**PATCH /kv/\*path** — update an existing entry in place. Both fields are optional:
+
+```json
+{
+  "merge": { "acks": ["pod-a"] },
+  "ttl_seconds": 30
+}
+```
+
+- `merge` (when present) is a JSON object shallow-merged into the current value; merging a non-object replaces the value wholesale. Omit it to leave the value untouched (e.g. a TTL-only heartbeat refresh).
+- `ttl_seconds` (when present) resets `expires_at` to `now + ttl_seconds`; a non-positive value expires the entry immediately. Omit it to leave the current expiry untouched.
+
+Returns `404` if the key is absent, stale, or already expired.
+
+**GET /kv/\*path** dispatches on the path:
+
+- **Exact key match** → a single entry object: `{ "namespace", "key", "value", "expires_at" }`.
+- **No exact match** → the path is treated as a namespace prefix and all live (non-expired) entries beneath it are returned as a JSON array, ordered by creation time.
+- **Neither** → `404 Not Found`.
+
+```sh
+# Register an instance with a 30s TTL
+curl -s -X PUT -H 'Content-Type: application/json' \
+  -d '{"value":{"version":"1.0"},"ttl_seconds":30}' \
+  http://localhost:7500/kv/guilhem/instances/pod-abc
+
+# Read it back (exact key)
+curl -s http://localhost:7500/kv/guilhem/instances/pod-abc
+
+# List every live instance (namespace)
+curl -s http://localhost:7500/kv/guilhem/instances
+
+# Merge a field into an existing value
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"merge":{"acks":["pod-a"]}}' \
+  http://localhost:7500/kv/guilhem/proposals/uuid-1
+
+# Refresh only the TTL (heartbeat) without resending the value
+curl -s -X PATCH -H 'Content-Type: application/json' \
+  -d '{"ttl_seconds":30}' \
+  http://localhost:7500/kv/guilhem/instances/pod-abc
+```
+
 ---
 
 ## MCP Server
@@ -438,6 +507,14 @@ CREATE TABLE IF NOT EXISTS governance_assessments (
 ```
 
 Backs the `/governance` routes (see [REST API](#rest-api)) — tracks the reversibility/impact assessment and routing decision for a contribution, keyed to the originating node.
+
+### migration 004 — KV expiry
+
+```sql
+ALTER TABLE nodes ADD COLUMN expires_at TEXT NULL;
+```
+
+Adds an `expires_at` timestamp (RFC 3339) to `nodes`. `NULL` means no expiry. Used exclusively by `NodeKind = 'KV'` rows to back the TTL-aware [KV store endpoints](#kv-store-endpoints); `GET`/`DELETE`/`PATCH` ignore any row whose `expires_at` is in the past. Backwards-compatible — existing rows default to `NULL`.
 
 ---
 
