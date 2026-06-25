@@ -6,7 +6,7 @@ pub mod kv;
 pub mod mcp;
 pub mod signals;
 
-use axum::{routing::{delete, get, patch, post, put}, Router};
+use axum::{routing::{get, post}, Router};
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
