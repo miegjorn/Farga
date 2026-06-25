@@ -2,10 +2,11 @@ pub mod artifacts;
 pub mod audit;
 pub mod context;
 pub mod governance;
+pub mod kv;
 pub mod mcp;
 pub mod signals;
 
-use axum::{routing::{get, post}, Router};
+use axum::{routing::{delete, get, patch, post, put}, Router};
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
@@ -29,5 +30,11 @@ pub fn router(state: AppState) -> Router {
         .route("/governance/config", get(governance::get_governance_config))
         .route("/governance/decisions", post(governance::post_governance_decision))
         .route("/governance/assessments/:node_id", get(governance::get_assessment))
+        // KV store — mutable, TTL-aware, used for inter-instance coordination
+        .route("/kv/*path",
+            get(kv::get_kv_or_list)
+            .put(kv::put_kv)
+            .delete(kv::delete_kv_handler)
+            .patch(kv::patch_kv_handler))
         .with_state(state)
 }
