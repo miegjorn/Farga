@@ -1,6 +1,6 @@
 use axum::{body::Body, http::{Request, StatusCode}};
 use sqlx::SqlitePool;
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 use tower::ServiceExt;
 
 async fn test_pool() -> SqlitePool {
