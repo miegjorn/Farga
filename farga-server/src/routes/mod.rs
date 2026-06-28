@@ -18,6 +18,7 @@ pub fn router(state: AppState) -> Router {
         .route("/context/org/:org", get(context::get_org))
         .route("/context/initiatives/:org", get(context::get_initiatives))
         .route("/context/project/:project", get(context::get_project))
+        .route("/context/components/:project", get(context::get_components))
         .route("/context/component/:project/*path", get(context::get_component))
         .route("/signals", post(signals::post_signals))
         .route("/signals/recent", get(signals::get_recent_signals))

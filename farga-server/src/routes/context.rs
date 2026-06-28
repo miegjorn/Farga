@@ -19,3 +19,10 @@ pub async fn get_component(
 ) -> String {
     s.docs.read_component(&project, &component).unwrap_or_default()
 }
+
+pub async fn get_components(
+    State(s): State<AppState>,
+    Path(project): Path<String>,
+) -> Json<Vec<String>> {
+    Json(s.docs.list_components(&project).unwrap_or_default())
+}

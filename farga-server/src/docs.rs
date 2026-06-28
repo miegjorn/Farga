@@ -40,4 +40,23 @@ impl DocsTree {
         let p = self.root.join("governance.yaml");
         Ok(if p.exists() { std::fs::read_to_string(p)? } else { String::new() })
     }
+
+    pub fn list_components(&self, project: &str) -> Result<Vec<String>> {
+        let dir = self.root.join("projects").join(project);
+        if !dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() && path.join("component.md").exists() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
 }
