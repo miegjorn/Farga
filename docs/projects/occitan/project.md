@@ -34,9 +34,35 @@ Phase II / Guilhem. The stack is being handed to its own agents to manage.
 Guilhem is the org agent: always on, watches activity, chronicles into Farga,
 available for direct conversation via `caissa spawn guilhem`.
 
+## Matrix room topology (2026-06-27)
+
+Charradissa now provisions rooms dynamically at startup via `provision_project_rooms`.
+It reads the component list from Farga (`GET /context/components/occitan`), resolves
+each component's system prompt from Fondament (`GET /resolve/fondament/{name}-agent`),
+and creates-or-joins aliased Matrix rooms:
+
+| Room alias | Purpose |
+|---|---|
+| `#occitan:occitane.guilhem` | Project room — Guilhem lives here as `@charradissa` (display name "Guilhem") |
+| `#amassada:occitane.guilhem` | Amassada component agent room |
+| `#farga:occitane.guilhem` | Farga component agent room |
+| `#fondament:occitane.guilhem` | Fondament component agent room |
+| `#charradissa:occitane.guilhem` | Charradissa component agent room |
+| `#cor:occitane.guilhem` | Cor component agent room |
+| `#caissa:occitane.guilhem` | Caissa component agent room |
+| `#gardian:occitane.guilhem` | Gardian component agent room |
+
+Guilhem responds in `#occitan` via the default HTTP agent URL. Each `#component` room
+gets its own Responder with the Fondament-resolved system prompt. If Fondament returns
+an empty prompt, that component room is skipped (fallback: static `[component_agents]`
+TOML fires if all components are skipped). `fondament-server` is built but not yet
+deployed — that's the next step before provisioning is fully live.
+
 ## Open questions
 
 - Guilhem event listener architecture (task #7): webhook vs polling
+- Drive provisioning off `fondament-server /component-agents` instead of Farga doc-listing (eliminates the `{name}-agent` template assumption — deferred from issue #22)
+- `create_or_join_aliased_room` treats any 400 as "create" — should verify `M_NOT_FOUND` errcode (minor, deferred)
 - Farga migration from SQLite to Postgres when write contention becomes an issue
 - Federation with future generations (occitane.arnaut, etc.)
 
