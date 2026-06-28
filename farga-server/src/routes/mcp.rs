@@ -224,13 +224,31 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
             let project = args["project"].as_str().unwrap_or("").to_string();
             anyhow::ensure!(!project.is_empty(), "project is required");
 
-            let rows: Vec<(Option<String>,)> = sqlx::query_as(
-                "SELECT content FROM nodes WHERE kind = 'Signal' AND project = ? AND stale = 0 ORDER BY created_at DESC LIMIT 50"
-            )
-            .bind(&project)
-            .fetch_all(&state.pool)
-            .await
-            .unwrap_or_default();
+            // Parse and validate the optional `since` parameter.
+            let since_ts: Option<String> = args["since"].as_str().and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| dt.to_rfc3339())
+            });
+
+            let rows: Vec<(Option<String>,)> = if let Some(ref since) = since_ts {
+                sqlx::query_as(
+                    "SELECT content FROM nodes WHERE kind = 'Signal' AND project = ? AND stale = 0 AND created_at > ? ORDER BY created_at DESC LIMIT 50"
+                )
+                .bind(&project)
+                .bind(since)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default()
+            } else {
+                sqlx::query_as(
+                    "SELECT content FROM nodes WHERE kind = 'Signal' AND project = ? AND stale = 0 ORDER BY created_at DESC LIMIT 50"
+                )
+                .bind(&project)
+                .fetch_all(&state.pool)
+                .await
+                .unwrap_or_default()
+            };
 
             let signals: Vec<String> = rows.into_iter()
                 .filter_map(|(c,)| c)

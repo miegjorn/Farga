@@ -1,6 +1,6 @@
 use farga_core::types::{
-    GovernanceContribution, FargaLayer, ReversibilityLevel, ImpactScope,
-    LibrarianAssessment, LibrarianRouting, GovernanceStatus, NodeKind, EdgeKind, Node,
+    GovernanceContribution, FargaLayer,
+    GovernanceStatus, NodeKind, EdgeKind,
 };
 use chrono::Utc;
 
@@ -38,20 +38,6 @@ fn governance_contribution_round_trips() {
     assert_eq!(back.event_count, 3);
     assert_eq!(back.target_layer, FargaLayer::ProjectLevel);
     assert!(back.reversibility.is_none());
-}
-
-#[test]
-fn librarian_assessment_round_trips() {
-    let assessment = LibrarianAssessment {
-        reversibility: ReversibilityLevel::CostlyReversible,
-        impact: ImpactScope::DomainWide,
-        routing: LibrarianRouting::OpenGovernance,
-        notes: Some("Broad Fondament impact".into()),
-    };
-    let json = serde_json::to_string(&assessment).unwrap();
-    let back: LibrarianAssessment = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.impact, ImpactScope::DomainWide);
-    assert_eq!(back.routing, LibrarianRouting::OpenGovernance);
 }
 
 #[test]

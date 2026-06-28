@@ -169,13 +169,6 @@ pub enum ImpactScope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LibrarianRouting {
-    DirectIntegrate,
-    OpenGovernance,
-    Reject,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GovernanceStatus {
     Pending,
     DirectIntegrate,
@@ -199,10 +192,3 @@ pub struct GovernanceContribution {
     pub impact: Option<ImpactScope>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LibrarianAssessment {
-    pub reversibility: ReversibilityLevel,
-    pub impact: ImpactScope,
-    pub routing: LibrarianRouting,
-    pub notes: Option<String>,
-}
