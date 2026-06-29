@@ -7,7 +7,7 @@ use axum::{extract::State, http::StatusCode, Json};
 use farga_core::types::{Artifact, Node, NodeKind, Signal};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::{db::{insert_node, upsert_component_todo}, state::AppState};
+use crate::{db::{insert_node, upsert_component_todo, upsert_context_node, get_context_node, list_context_nodes}, state::AppState};
 
 // ── JSON-RPC 2.0 envelope ─────────────────────────────────────────────────────
 
@@ -68,11 +68,12 @@ fn tool_list() -> Value {
             },
             {
                 "name": "read_context",
-                "description": "Read the current context for a project as markdown. Returns accumulated signals, artifacts, and project documentation.",
+                "description": "Read the current context for a project as markdown. Returns accumulated signals, artifacts, project documentation, and context graph nodes.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "project": { "type": "string", "description": "Project identifier" }
+                        "project": { "type": "string", "description": "Project identifier" },
+                        "role": { "type": "string", "description": "Your role for context graph access: component | architect | org | human (optional, defaults to component)" }
                     },
                     "required": ["project"]
                 }
@@ -123,6 +124,46 @@ fn tool_list() -> Value {
                         "content": { "type": "string", "description": "The TODO content — what's deferred and why" }
                     },
                     "required": ["project", "component", "content"]
+                }
+            },
+            {
+                "name": "write_context_node",
+                "description": "Write a typed context node to the Farga context graph. Context nodes are role-scoped knowledge artifacts: codebase references, architecture summaries, design rationale, etc. Identified by hierarchical path like [gardian][codebase] or [occitan][system-rationale].",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Hierarchical path, e.g. [gardian][codebase] or [occitan][system-rationale]" },
+                        "node_type": { "type": "string", "description": "Node type: codebase-ref | architecture | rationale | persona | decision | design" },
+                        "content": { "type": "string", "description": "Node content (markdown, reference URL, or structured text)" },
+                        "read_role": { "type": "string", "description": "Minimum role to read: component | architect | org | human" },
+                        "project": { "type": "string", "description": "Project identifier" },
+                        "component": { "type": "string", "description": "Component name (optional)" }
+                    },
+                    "required": ["path", "node_type", "content", "read_role", "project"]
+                }
+            },
+            {
+                "name": "read_context_node",
+                "description": "Read a specific context node by path. Returns the node content if your role permits access.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "role": { "type": "string", "description": "Your role: component | architect | org | human" }
+                    },
+                    "required": ["path", "role"]
+                }
+            },
+            {
+                "name": "list_context_nodes",
+                "description": "List context nodes accessible to your role for a project. Returns paths and node types.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string" },
+                        "role": { "type": "string", "description": "Your role: component | architect | org | human" }
+                    },
+                    "required": ["project", "role"]
                 }
             }
         ]
@@ -193,11 +234,39 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
             let project = args["project"].as_str().unwrap_or("").to_string();
             anyhow::ensure!(!project.is_empty(), "project is required");
 
+            let role_level = args["role"].as_str()
+                .map(role_to_level)
+                .unwrap_or(0);
+
             let ctx = fetch_project_context(&state.pool, &project).await?;
-            if ctx.is_empty() {
+            let context_nodes = list_context_nodes(&state.pool, &project, role_level).await
+                .unwrap_or_default();
+
+            let mut parts: Vec<String> = Vec::new();
+            if !ctx.is_empty() {
+                parts.push(ctx);
+            }
+            if !context_nodes.is_empty() {
+                let mut section = String::from("## Context Graph
+");
+                for node in &context_nodes {
+                    let path = node.address.as_deref().unwrap_or("");
+                    let node_type = node.title.as_deref().unwrap_or("");
+                    let body = node.content.as_deref().unwrap_or("");
+                    section.push_str(&format!("
+### {} ({})
+{}
+", path, node_type, body));
+                }
+                parts.push(section);
+            }
+
+            if parts.is_empty() {
                 Ok(text_result(format!("No context found for project '{}'", project)))
             } else {
-                Ok(text_result(ctx))
+                Ok(text_result(parts.join("
+
+")))
             }
         }
 
@@ -294,7 +363,86 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
             Ok(text_result(format!("Component TODO updated (id: {})", id)))
         }
 
+        "write_context_node" => {
+            let path_arg = args["path"].as_str().unwrap_or("").to_string();
+            let node_type = args["node_type"].as_str().unwrap_or("").to_string();
+            let content_arg = args["content"].as_str().unwrap_or("").to_string();
+            let read_role = args["read_role"].as_str().unwrap_or("component").to_string();
+            let project = args["project"].as_str().unwrap_or("").to_string();
+            let component = args["component"].as_str().map(|s| s.to_string());
+
+            anyhow::ensure!(!path_arg.is_empty(), "path is required");
+            anyhow::ensure!(!node_type.is_empty(), "node_type is required");
+            anyhow::ensure!(!content_arg.is_empty(), "content is required");
+            anyhow::ensure!(!project.is_empty(), "project is required");
+
+            let level = role_to_level(&read_role);
+            let id = upsert_context_node(
+                &state.pool,
+                &path_arg,
+                &node_type,
+                &content_arg,
+                level,
+                &project,
+                component.as_deref(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("upsert failed: {}", e))?;
+
+            Ok(text_result(format!("Context node written (id: {}, path: {})", id, path_arg)))
+        }
+
+        "read_context_node" => {
+            let path_arg = args["path"].as_str().unwrap_or("").to_string();
+            let role = args["role"].as_str().unwrap_or("component").to_string();
+
+            anyhow::ensure!(!path_arg.is_empty(), "path is required");
+
+            let level = role_to_level(&role);
+            match get_context_node(&state.pool, &path_arg, level).await? {
+                None => Ok(text_result(format!("Context node not found or not accessible at path '{}'", path_arg))),
+                Some(node) => {
+                    let body = node.content.unwrap_or_default();
+                    let node_type = node.title.unwrap_or_default();
+                    Ok(text_result(format!("### {} ({})
+{}", path_arg, node_type, body)))
+                }
+            }
+        }
+
+        "list_context_nodes" => {
+            let project = args["project"].as_str().unwrap_or("").to_string();
+            let role = args["role"].as_str().unwrap_or("component").to_string();
+
+            anyhow::ensure!(!project.is_empty(), "project is required");
+
+            let level = role_to_level(&role);
+            let nodes = list_context_nodes(&state.pool, &project, level).await
+                .map_err(|e| anyhow::anyhow!("list failed: {}", e))?;
+
+            if nodes.is_empty() {
+                Ok(text_result(format!("No context nodes found for project '{}' at role '{}'", project, role)))
+            } else {
+                let lines: Vec<String> = nodes.iter().map(|n| {
+                    let path = n.address.as_deref().unwrap_or("");
+                    let node_type = n.title.as_deref().unwrap_or("");
+                    format!("{} ({})", path, node_type)
+                }).collect();
+                Ok(text_result(lines.join("
+")))
+            }
+        }
+
         _ => anyhow::bail!("unknown tool: {}", name),
+    }
+}
+
+fn role_to_level(role: &str) -> i64 {
+    match role {
+        "architect" => 1,
+        "org" => 2,
+        "human" => 3,
+        _ => 0, // default: component
     }
 }
 

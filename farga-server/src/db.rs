@@ -440,3 +440,131 @@ pub async fn patch_kv(
     }
     Ok(true)
 }
+
+// ── Context graph ─────────────────────────────────────────────────────────────
+
+/// Upsert a typed context node by path. Path is the address field (e.g. "[gardian][codebase]").
+/// node_type stored in title field. read_role_level 0=component..3=human.
+pub async fn upsert_context_node(
+    pool: &SqlitePool,
+    path: &str,
+    node_type: &str,
+    content: &str,
+    read_role_level: i64,
+    project: &str,
+    component: Option<&str>,
+) -> Result<String> {
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM nodes WHERE kind = 'ContextNode' AND address = ? AND stale = 0 LIMIT 1"
+    )
+    .bind(path)
+    .fetch_optional(pool)
+    .await?;
+
+    if let Some((id,)) = existing {
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "UPDATE nodes SET title = ?, content = ?, read_role_level = ?, project = ?, component = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(node_type)
+        .bind(content)
+        .bind(read_role_level)
+        .bind(project)
+        .bind(component)
+        .bind(&updated_at)
+        .bind(&id)
+        .execute(pool)
+        .await?;
+        Ok(id)
+    } else {
+        let id = Uuid::new_v4().to_string();
+        let ts = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO nodes (id, kind, address, title, content, read_role_level, project, component, created_at, updated_at, stale)
+             VALUES (?, 'ContextNode', ?, ?, ?, ?, ?, ?, ?, ?, 0)"
+        )
+        .bind(&id)
+        .bind(path)
+        .bind(node_type)
+        .bind(content)
+        .bind(read_role_level)
+        .bind(project)
+        .bind(component)
+        .bind(&ts)
+        .bind(&ts)
+        .execute(pool)
+        .await?;
+        Ok(id)
+    }
+}
+
+/// Read a specific context node by path. Returns None if not found or if requester_role_level
+/// is lower than the node's read_role_level.
+pub async fn get_context_node(
+    pool: &SqlitePool,
+    path: &str,
+    requester_role_level: i64,
+) -> Result<Option<Node>> {
+    let row: Option<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, String, i64)> =
+        sqlx::query_as(
+            "SELECT id, kind, address, project, component, title, content, created_at, updated_at, stale
+             FROM nodes
+             WHERE kind = 'ContextNode' AND address = ? AND read_role_level <= ? AND stale = 0
+             LIMIT 1"
+        )
+        .bind(path)
+        .bind(requester_role_level)
+        .fetch_optional(pool)
+        .await?;
+
+    match row {
+        None => Ok(None),
+        Some(r) => Ok(Some(Node {
+            id: r.0,
+            kind: NodeKind::from_str(&r.1).map_err(|e| anyhow::anyhow!(e))?,
+            address: r.2,
+            project: r.3,
+            component: r.4,
+            title: r.5,
+            content: r.6,
+            created_at: chrono::DateTime::parse_from_rfc3339(&r.7)?.into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339(&r.8)?.into(),
+            stale: r.9 != 0,
+        })),
+    }
+}
+
+/// List context nodes accessible to requester_role_level for a project.
+pub async fn list_context_nodes(
+    pool: &SqlitePool,
+    project: &str,
+    requester_role_level: i64,
+) -> Result<Vec<Node>> {
+    let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, String, String, i64)> =
+        sqlx::query_as(
+            "SELECT id, kind, address, project, component, title, content, created_at, updated_at, stale
+             FROM nodes
+             WHERE kind = 'ContextNode' AND project = ? AND read_role_level <= ? AND stale = 0
+             ORDER BY address"
+        )
+        .bind(project)
+        .bind(requester_role_level)
+        .fetch_all(pool)
+        .await?;
+
+    rows.into_iter().map(|r| -> Result<Node> {
+        Ok(Node {
+            id: r.0,
+            kind: NodeKind::from_str(&r.1).map_err(|e| anyhow::anyhow!(e))?,
+            address: r.2,
+            project: r.3,
+            component: r.4,
+            title: r.5,
+            content: r.6,
+            created_at: chrono::DateTime::parse_from_rfc3339(&r.7)?.into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339(&r.8)?.into(),
+            stale: r.9 != 0,
+        })
+    }).collect()
+}
+

@@ -10,6 +10,8 @@ pub enum NodeKind {
     GovernanceContribution,
     /// Mutable KV entry — supports TTL via expires_at in the nodes table.
     KV,
+    /// Role-scoped context graph node: codebase refs, architecture summaries, rationale, etc.
+    ContextNode,
 }
 
 impl NodeKind {
@@ -27,6 +29,7 @@ impl NodeKind {
             Self::AuditEntry => "AuditEntry",
             Self::GovernanceContribution => "GovernanceContribution",
             Self::KV => "KV",
+            Self::ContextNode => "ContextNode",
         }
     }
 }
@@ -47,6 +50,7 @@ impl FromStr for NodeKind {
             "AuditEntry" => Ok(Self::AuditEntry),
             "GovernanceContribution" => Ok(Self::GovernanceContribution),
             "KV" => Ok(Self::KV),
+            "ContextNode" => Ok(Self::ContextNode),
             _ => Err(format!("unknown NodeKind: {}", s)),
         }
     }
