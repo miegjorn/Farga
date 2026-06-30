@@ -12,6 +12,14 @@ pub enum NodeKind {
     KV,
     /// Role-scoped context graph node: codebase refs, architecture summaries, rationale, etc.
     ContextNode,
+    /// Pointer to an external live source (Confluence, RSS, WebSocket, API endpoint).
+    /// Content is JSON: {url, fetch_type, transform_hint, last_fetched?}.
+    /// JIT-resolved at agent runtime via resolve_reference — never copied in.
+    Reference,
+    /// Org-internal procedure, checklist, or BPA/RPA workflow.
+    /// Content is markdown — the actual procedure steps.
+    /// Stored in Farga (org knowledge), referenced by Fondament roles or dispatch calls.
+    Discipline,
 }
 
 impl NodeKind {
@@ -30,6 +38,8 @@ impl NodeKind {
             Self::GovernanceContribution => "GovernanceContribution",
             Self::KV => "KV",
             Self::ContextNode => "ContextNode",
+            Self::Reference => "Reference",
+            Self::Discipline => "Discipline",
         }
     }
 }
@@ -51,6 +61,8 @@ impl FromStr for NodeKind {
             "GovernanceContribution" => Ok(Self::GovernanceContribution),
             "KV" => Ok(Self::KV),
             "ContextNode" => Ok(Self::ContextNode),
+            "Reference" => Ok(Self::Reference),
+            "Discipline" => Ok(Self::Discipline),
             _ => Err(format!("unknown NodeKind: {}", s)),
         }
     }

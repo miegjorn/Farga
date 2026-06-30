@@ -5,6 +5,7 @@
 
 use axum::{extract::State, http::StatusCode, Json};
 use farga_core::types::{Artifact, Node, NodeKind, Signal};
+use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::{db::{insert_node, upsert_component_todo, upsert_context_node, get_context_node, list_context_nodes}, state::AppState};
@@ -164,6 +165,59 @@ fn tool_list() -> Value {
                         "role": { "type": "string", "description": "Your role: component | architect | org | human" }
                     },
                     "required": ["project", "role"]
+                }
+            },
+            {
+                "name": "write_reference",
+                "description": "Register an external live source in Farga's reference graph. The source is never copied — it is JIT-resolved at agent runtime via resolve_reference. Use for Confluence pages, RSS feeds, API endpoints, or any authoritative external document.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Stable identifier, e.g. [occitan][architecture/confluence-adr]" },
+                        "url": { "type": "string", "description": "The authoritative URL or endpoint" },
+                        "fetch_type": { "type": "string", "description": "How to fetch: http_get | rss | websocket | api" },
+                        "transform_hint": { "type": "string", "description": "How to distill the raw content for agents (e.g. 'extract h2 sections', 'summarize', 'return as-is')" },
+                        "project": { "type": "string", "description": "Project identifier" },
+                        "title": { "type": "string", "description": "Human-readable name for this reference" }
+                    },
+                    "required": ["path", "url", "fetch_type", "project"]
+                }
+            },
+            {
+                "name": "resolve_reference",
+                "description": "JIT-fetch the content of a registered external reference. Fetches live from the source, applies the transform hint, and returns agent-digestible content. The source is authoritative — this call always returns current state.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "The reference path registered via write_reference" }
+                    },
+                    "required": ["path"]
+                }
+            },
+            {
+                "name": "write_discipline",
+                "description": "Store an org-internal procedure, checklist, or BPA/RPA workflow in Farga. Disciplines are org-specific (not portable like skills) and are resolved at agent runtime. Use for deployment checklists, approval workflows, compliance procedures, or any internal process an agent must follow.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Stable identifier, e.g. [nervi][deploy-checklist] or [occitan][incident-response]" },
+                        "content": { "type": "string", "description": "The procedure content — markdown, steps, checklist, or BPA/RPA flow definition" },
+                        "project": { "type": "string", "description": "Project identifier" },
+                        "title": { "type": "string", "description": "Human-readable name for this discipline" },
+                        "component": { "type": "string", "description": "Component this discipline belongs to (optional — omit for org-wide disciplines)" }
+                    },
+                    "required": ["path", "content", "project"]
+                }
+            },
+            {
+                "name": "get_discipline",
+                "description": "Retrieve an org-internal discipline (procedure, checklist, workflow) for an agent to follow. Returns the full procedure content. Call this when you need to know the specific internal steps for a task — not general methodology (that is a skill), but THIS organization's specific way of doing it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "The discipline path registered via write_discipline" }
+                    },
+                    "required": ["path"]
                 }
             }
         ]
@@ -430,6 +484,127 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
                 }).collect();
                 Ok(text_result(lines.join("
 ")))
+            }
+        }
+
+        "write_reference" => {
+            let path = args["path"].as_str().unwrap_or("").to_string();
+            let url = args["url"].as_str().unwrap_or("").to_string();
+            let fetch_type = args["fetch_type"].as_str().unwrap_or("http_get").to_string();
+            let transform_hint = args["transform_hint"].as_str().unwrap_or("return as-is").to_string();
+            let project = args["project"].as_str().unwrap_or("").to_string();
+            let title = args["title"].as_str().map(|s| s.to_string());
+
+            anyhow::ensure!(!path.is_empty(), "path is required");
+            anyhow::ensure!(!url.is_empty(), "url is required");
+            anyhow::ensure!(!project.is_empty(), "project is required");
+
+            let meta = serde_json::json!({
+                "url": url,
+                "fetch_type": fetch_type,
+                "transform_hint": transform_hint,
+            });
+            let mut node = Node::new(
+                NodeKind::Reference,
+                Some(project),
+                Some(meta.to_string()),
+            );
+            node.address = Some(path.clone());
+            node.title = title;
+
+            insert_node(&state.pool, &node).await
+                .map_err(|e| anyhow::anyhow!("insert failed: {}", e))?;
+
+            Ok(text_result(format!("Reference registered (id: {}, path: {})", node.id, path)))
+        }
+
+        "resolve_reference" => {
+            let path = args["path"].as_str().unwrap_or("").to_string();
+            anyhow::ensure!(!path.is_empty(), "path is required");
+
+            let row: Option<(Option<String>,)> = sqlx::query_as(
+                "SELECT content FROM nodes WHERE kind = 'Reference' AND address = ? AND stale = 0 ORDER BY created_at DESC LIMIT 1"
+            )
+            .bind(&path)
+            .fetch_optional(&state.pool)
+            .await?;
+
+            let content_str = row
+                .and_then(|(c,)| c)
+                .ok_or_else(|| anyhow::anyhow!("reference not found: {}", path))?;
+
+            let meta: serde_json::Value = serde_json::from_str(&content_str)
+                .map_err(|_| anyhow::anyhow!("malformed reference metadata at {}", path))?;
+
+            let url = meta["url"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("reference missing url"))?;
+            let fetch_type = meta["fetch_type"].as_str().unwrap_or("http_get");
+            let transform_hint = meta["transform_hint"].as_str().unwrap_or("return as-is");
+
+            let raw = match fetch_type {
+                "http_get" | "api" => {
+                    let resp = reqwest::Client::new()
+                        .get(url)
+                        .timeout(std::time::Duration::from_secs(15))
+                        .send()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("fetch failed ({}): {}", url, e))?;
+                    if !resp.status().is_success() {
+                        anyhow::bail!("fetch returned {} for {}", resp.status(), url);
+                    }
+                    resp.text().await
+                        .map_err(|e| anyhow::anyhow!("read body failed: {}", e))?
+                }
+                other => anyhow::bail!("unsupported fetch_type '{}' — implement {} handler", other, other),
+            };
+
+            let out = format!(
+                "Reference: {}\nSource: {}\nTransform: {}\n\n---\n\n{}",
+                path, url, transform_hint, raw
+            );
+            Ok(text_result(out))
+        }
+
+        "write_discipline" => {
+            let path = args["path"].as_str().unwrap_or("").to_string();
+            let content = args["content"].as_str().unwrap_or("").to_string();
+            let project = args["project"].as_str().unwrap_or("").to_string();
+            let title = args["title"].as_str().map(|s| s.to_string());
+            let component = args["component"].as_str().map(|s| s.to_string());
+
+            anyhow::ensure!(!path.is_empty(), "path is required");
+            anyhow::ensure!(!content.is_empty(), "content is required");
+            anyhow::ensure!(!project.is_empty(), "project is required");
+
+            let mut node = Node::new(NodeKind::Discipline, Some(project), Some(content));
+            node.address = Some(path.clone());
+            node.title = title;
+            node.component = component;
+
+            insert_node(&state.pool, &node).await
+                .map_err(|e| anyhow::anyhow!("insert failed: {}", e))?;
+
+            Ok(text_result(format!("Discipline written (id: {}, path: {})", node.id, path)))
+        }
+
+        "get_discipline" => {
+            let path = args["path"].as_str().unwrap_or("").to_string();
+            anyhow::ensure!(!path.is_empty(), "path is required");
+
+            let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT title, content FROM nodes WHERE kind = 'Discipline' AND address = ? AND stale = 0 ORDER BY created_at DESC LIMIT 1"
+            )
+            .bind(&path)
+            .fetch_optional(&state.pool)
+            .await?;
+
+            match row {
+                None => Ok(text_result(format!("Discipline not found: {}", path))),
+                Some((title, content)) => {
+                    let heading = title.unwrap_or_else(|| path.clone());
+                    let body = content.unwrap_or_default();
+                    Ok(text_result(format!("## {}\n\n{}", heading, body)))
+                }
             }
         }
 
