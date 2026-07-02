@@ -4,11 +4,11 @@
 //! Exposes Farga's core operations as MCP tools consumable by Claude agents.
 
 use axum::{extract::State, http::StatusCode, Json};
-use farga_core::types::{Artifact, Node, NodeKind, Signal};
+use farga_core::types::{Artifact, Edge, EdgeKind, Node, NodeKind, Signal};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::{db::{insert_node, upsert_component_todo, upsert_context_node, get_context_node, list_context_nodes}, state::AppState};
+use crate::{db::{insert_edge, insert_node, mark_stale, upsert_component_todo, upsert_context_node, get_context_node, list_context_nodes}, state::AppState};
 
 // ── JSON-RPC 2.0 envelope ─────────────────────────────────────────────────────
 
@@ -56,13 +56,15 @@ fn tool_list() -> Value {
         "tools": [
             {
                 "name": "write_signal",
-                "description": "Write an observation, event, or decision to Farga's project memory. Use this to record what happened, what was decided, and why.",
+                "description": "Write an observation, event, or decision to Farga's project memory. Use this to record what happened, what was decided, and why. Optionally set a TTL so the signal auto-expires, or mark it as superseding a prior signal to collapse contradictory state.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "project": { "type": "string", "description": "Project identifier (e.g. 'occitan', 'farga')" },
                         "content": { "type": "string", "description": "The signal content — what happened or was decided" },
-                        "source": { "type": "string", "description": "Source of this signal (e.g. 'guilhem', 'farga/architect')" }
+                        "source": { "type": "string", "description": "Source of this signal (e.g. 'guilhem', 'farga/architect')" },
+                        "ttl_hours": { "type": "number", "description": "Optional TTL in hours. The signal becomes invisible to search_signals after this duration. Use for transient state (health checks, heartbeats) that should not persist indefinitely." },
+                        "supersedes": { "type": "string", "description": "Optional ID of a prior signal this one replaces. The old signal is marked stale and linked via a supersedes edge. Retrieve prior signal IDs from search_signals output. Use to resolve contradictory state (e.g. 'guilhem recovered' supersedes 'guilhem unreachable')." }
                     },
                     "required": ["project", "content"]
                 }
@@ -272,16 +274,52 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
             let project = args["project"].as_str().unwrap_or("").to_string();
             let content = args["content"].as_str().unwrap_or("").to_string();
             let source = args["source"].as_str().unwrap_or("agent").to_string();
+            let ttl_hours: Option<f64> = args["ttl_hours"].as_f64();
+            let supersedes: Option<String> = args["supersedes"].as_str().map(|s| s.to_string());
 
             anyhow::ensure!(!project.is_empty(), "project is required");
             anyhow::ensure!(!content.is_empty(), "content is required");
+            if let Some(hours) = ttl_hours {
+                anyhow::ensure!(hours > 0.0, "ttl_hours must be positive");
+            }
 
             let sig = Signal { project: project.clone(), content, source };
             let node = Node::new(NodeKind::Signal, Some(project), Some(sig.content.clone()));
+            let node_id = node.id.clone();
             insert_node(&state.pool, &node).await
                 .map_err(|e| anyhow::anyhow!("insert failed: {}", e))?;
 
-            Ok(text_result(format!("Signal written (id: {})", node.id)))
+            // Apply TTL: set expires_at on the newly inserted node.
+            if let Some(hours) = ttl_hours {
+                let secs = (hours * 3600.0) as i64;
+                let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(secs)).to_rfc3339();
+                sqlx::query("UPDATE nodes SET expires_at = ? WHERE id = ?")
+                    .bind(&expires_at)
+                    .bind(&node_id)
+                    .execute(&state.pool)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("ttl update failed: {}", e))?;
+            }
+
+            // Supersedes: mark old signal stale and record the edge.
+            if let Some(old_id) = supersedes {
+                anyhow::ensure!(!old_id.is_empty(), "supersedes must be a non-empty signal ID");
+                // Mark old signal stale (best-effort — if it doesn't exist, warn but don't fail).
+                if let Err(e) = mark_stale(&state.pool, &old_id).await {
+                    tracing::warn!("mark_stale({}) failed: {} — proceeding anyway", old_id, e);
+                }
+                let edge = Edge {
+                    from_id: node_id.clone(),
+                    to_id: old_id,
+                    kind: EdgeKind::SupersededBy,
+                    weight: 1.0,
+                    created_at: chrono::Utc::now(),
+                };
+                insert_edge(&state.pool, &edge).await
+                    .map_err(|e| anyhow::anyhow!("supersedes edge insert failed: {}", e))?;
+            }
+
+            Ok(text_result(format!("Signal written (id: {})", node_id)))
         }
 
         "read_context" => {
@@ -354,34 +392,45 @@ async fn call_tool(state: &AppState, name: &str, args: &Value) -> anyhow::Result
                     .map(|dt| dt.to_rfc3339())
             });
 
-            let rows: Vec<(Option<String>,)> = if let Some(ref since) = since_ts {
+            let now = chrono::Utc::now().to_rfc3339();
+
+            // id + content; exclude stale and expired signals.
+            let rows: Vec<(String, Option<String>)> = if let Some(ref since) = since_ts {
                 sqlx::query_as(
-                    "SELECT content FROM nodes WHERE kind = 'Signal' AND project = ? AND stale = 0 AND created_at > ? ORDER BY created_at DESC LIMIT 50"
+                    "SELECT id, content FROM nodes \
+                     WHERE kind = 'Signal' AND project = ? AND stale = 0 \
+                       AND created_at > ? \
+                       AND (expires_at IS NULL OR expires_at > ?) \
+                     ORDER BY created_at DESC LIMIT 50"
                 )
                 .bind(&project)
                 .bind(since)
+                .bind(&now)
                 .fetch_all(&state.pool)
                 .await
                 .unwrap_or_default()
             } else {
                 sqlx::query_as(
-                    "SELECT content FROM nodes WHERE kind = 'Signal' AND project = ? AND stale = 0 ORDER BY created_at DESC LIMIT 50"
+                    "SELECT id, content FROM nodes \
+                     WHERE kind = 'Signal' AND project = ? AND stale = 0 \
+                       AND (expires_at IS NULL OR expires_at > ?) \
+                     ORDER BY created_at DESC LIMIT 50"
                 )
                 .bind(&project)
+                .bind(&now)
                 .fetch_all(&state.pool)
                 .await
                 .unwrap_or_default()
             };
 
-            let signals: Vec<String> = rows.into_iter()
-                .filter_map(|(c,)| c)
-                .collect();
-
-            let out = if signals.is_empty() {
+            let out = if rows.is_empty() {
                 format!("No signals found for project '{}'", project)
             } else {
-                signals.iter().enumerate()
-                    .map(|(i, s)| format!("{}. {}", i + 1, s))
+                rows.iter().enumerate()
+                    .map(|(i, (id, content))| {
+                        let body = content.as_deref().unwrap_or("");
+                        format!("{}. [id: {}] {}", i + 1, id, body)
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             };
