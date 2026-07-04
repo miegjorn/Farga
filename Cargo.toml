@@ -2,6 +2,9 @@
 members = ["farga-core", "farga-server", "farga-cli"]
 resolver = "2"
 
+[workspace.package]
+license = "Apache-2.0"
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = "0.7"
