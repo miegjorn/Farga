@@ -98,31 +98,7 @@ Definitions:
         projects = projects,
     );
 
-    let model = "claude-sonnet-4-6"; // support grok via xAI for intermingling
-
-    if model.starts_with("grok") || model.starts_with("xai") {
-        let api_key = std::env::var("XAI_API_KEY").map_err(|_| anyhow::anyhow!("XAI_API_KEY not set"))?;
-        let body = serde_json::json!({
-            "model": model,
-            "max_tokens": 256,
-            "messages": [{"role": "user", "content": prompt}]
-        });
-        let client = reqwest::Client::new();
-        let resp = client
-            .post("https://api.x.ai/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?;
-        let resp_json: serde_json::Value = resp.json().await?;
-        let text = resp_json["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("unexpected xAI response shape"))?;
-        let verdict: LibrarianVerdict = serde_json::from_str(text.trim())?;
-        return Ok(verdict);
-    }
+    let model = "claude-sonnet-4-6";
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| anyhow::anyhow!("ANTHROPIC_API_KEY not set"))?;
